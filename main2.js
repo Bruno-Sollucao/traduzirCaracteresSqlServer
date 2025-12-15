@@ -1,5 +1,5 @@
 // compararUnidades.js
-const { buscarSQLServer, buscarPostgresTeste, buscarPostgres, buscarPostgres2, atualizarUnidadeTeste } = require('./pesquisaSqls');
+const { buscarSQLServer, buscarPostgresTeste, buscarPostgres, buscarPostgres2, atualizarUnidadeTeste, atualizarUnidade } = require('./pesquisaSqls');
 
 // Função para identificar caracteres corrompidos (�) no SQL Server
 function identificarCorrompidos(str) {
@@ -68,32 +68,36 @@ async function compararUnidades(sqlUnidades, pgUnidades) {
   let countCertos = 0;
   let countErrados = 0;
 
+  console.log("PgUnidades: ", pgUnidades)
+  console.log("SqlUnidades: ", sqlUnidades)
+
   // sqlUnidades.forEach(sqlUni => {
   for (const sqlUni of sqlUnidades) {
     count++;
 
-    const pgUni = pgUnidades.find(p => p.coduni === sqlUni.cod_uni);
-
+    const pgUni = pgUnidades.find(p => p.coduni === sqlUni.COD_UNI);
     if (pgUni) {
-      // Se os nomes já são iguais, apenas log
-      if (sqlUni.uni_nome === pgUni.nomnov) {
-        console.log(`Unidade ${sqlUni.cod_uni}: nomes iguais, nada a fazer.`);
-        return;
+      if (sqlUni.UNI_NOME === pgUni.nomnov) {
+        console.log(`Unidade ${sqlUni.COD_UNI}: nomes iguais, nada a fazer.`);
+        console.log(`Nome no postgresql: ${pgUni.nomnov}, 
+          Nome no sqlServer: ${sqlUni.UNI_NOME}`)
+        console.log('---------------------------------------------------------------------------------------------------------------')
+        continue;
       }
       // Identifica caracteres corrompidos no SQL Server
-      const posCorrompidosSQL = identificarCorrompidos(sqlUni.uni_nome);
+      const posCorrompidosSQL = identificarCorrompidos(sqlUni.UNI_NOME);
 
       if (posCorrompidosSQL.length === 0) {
         // Se não há caracteres corrompidos, apenas log da diferença
         unidadesComDiferenca.push({
-          cod_uni: sqlUni.cod_uni,
-          nomeSQLOriginal: sqlUni.uni_nome,
+          COD_UNI: sqlUni.COD_UNI,
+          nomeSQLOriginal: sqlUni.UNI_NOME,
           nomePGOriginal: pgUni.nomnov,
           motivo: 'Diferença encontrada, mas sem caracteres corrompidos no SQL Server'
         });
       }
       // Remove os caracteres corrompidos do SQL Server
-      const nomeSqlLimpo = removerPosicoes(sqlUni.uni_nome, posCorrompidosSQL);
+      const nomeSqlLimpo = removerPosicoes(sqlUni.UNI_NOME, posCorrompidosSQL);
       // Remove os caracteres nas mesmas posições do PostgreSQL
       const nomePgLimpo = removerPosicoes(pgUni.nomnov, posCorrompidosSQL);
       // Compara os nomes limpos
@@ -101,39 +105,56 @@ async function compararUnidades(sqlUnidades, pgUnidades) {
         countErrados++;
 
         unidadesComDiferenca.push({
-          cod_uni: sqlUni.cod_uni,
-          nomeSQLOriginal: sqlUni.uni_nome,
+          COD_UNI: sqlUni.COD_UNI,
+          nomeSQLOriginal: sqlUni.UNI_NOME,
           nomePGOriginal: pgUni.nomnov,
           nomeSQLLimpo: nomeSqlLimpo,
           nomePGLimpo: nomePgLimpo,
           motivo: 'Diferença persiste após remover caracteres corrompidos do SQL Server e equivalentes do PostgreSQL'
         });
       } else {
-        countCertos++;
-
-        // console.log(`Unidade ${sqlUni.cod_uni}: nomes iguais após limpeza.`);
-        // console.log(`Nome limpo PostgreSql: ${nomePgLimpo}`);
-        // console.log(`Nome limpo SqlServer:  ${nomeSqlLimpo}`);
+        // countCertos++;
+        let validou = true;
+        let motivoErro = '';
 
         const condicao = await gerarCondicoesNome(pgUni.nomnov, posCorrompidosSQL);
-
         const nomeEmpresa = await buscarPostgres2(condicao);
-        if(Array.isArray(nomeEmpresa) && nomeEmpresa.length > 0){
-          nomeEmpresa.forEach(nome =>{
-            if (validaCaracterePelaPosicao(nome.empnom, posCorrompidosSQL)) {
-              if(nome.empnom.length === pgUni.nomnov.length){
-                atualizarUnidadeTeste(sqlUni.cod_uni, pgUni.nomnov)
-              }else{
-                console.log(`Tamanho do nome não bateu, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`)
-              }
-              // aqui você faz sua lógica final (inserir, atualizar, etc.)
-            }else{
-              console.log(`Nome da empresa não bateu com os logs, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`)
+
+        if (!Array.isArray(nomeEmpresa) || nomeEmpresa.length === 0) {
+          motivoErro = `Nome da empresa não encontrado, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`;
+          validou = false;
+        }
+
+        if (validou) {
+          for (const nome of nomeEmpresa) {
+            if (!validaCaracterePelaPosicao(nome.empnom, posCorrompidosSQL)) {
+              motivoErro = `Nome da empresa não bateu com os logs, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`;
+              validou = false;
+              break;
             }
-          })
-          // console.log("Nome corrigido para incersão: ", nomeEmpresa);
-        }else{
-          console.log(`Nome da empresa não encontrado, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`)
+
+            if (nome.empnom.length !== pgUni.nomnov.length) {
+              motivoErro = `Tamanho do nome não bateu, empresa: ${pgUni.nomnov}, código: ${pgUni.coduni}`;
+              validou = false;
+              break;
+            }
+          }
+        }
+
+        if (validou) {
+          countCertos++;
+          await atualizarUnidade(sqlUni.COD_UNI, pgUni.nomnov);
+        } else {
+          countErrados++;
+          unidadesComDiferenca.push({
+            COD_UNI: sqlUni.COD_UNI,
+            nomeSQLOriginal: sqlUni.UNI_NOME,
+            nomePGOriginal: pgUni.nomnov,
+            nomeSQLLimpo: nomeSqlLimpo,
+            nomePGLimpo: nomePgLimpo,
+            motivo: motivoErro
+          });
+          console.log(motivoErro);
         }
       }
     }
@@ -144,15 +165,15 @@ async function compararUnidades(sqlUnidades, pgUnidades) {
 // Função principal para orquestrar
 async function verificarUnidades() {
   try {
-    const sqlUnidades = (await buscarPostgresTeste()); // retorna recordset do SQL Server
+    const sqlUnidades = (await buscarSQLServer()); // retorna recordset do SQL Server
     const pgUnidades = (await buscarPostgres());       // retorna rows do PostgreSQL
 
     const resultado = await compararUnidades(sqlUnidades, pgUnidades);
 
     console.log('Unidades com diferenças após análise:', resultado.unidadesComDiferenca);
     console.log("Total de retornos: (127 esperados)", resultado.count);
-    console.log("Total de retornos: (127 esperados)", resultado.countCertos);
-    console.log("Total de retornos: (0 esperados)", resultado.countErrados);
+    console.log("Total de retornos certos: (127 esperados)", resultado.countCertos);
+    console.log("Total de retornos errados: (0 esperados)", resultado.countErrados);
 
     return resultado;
   } catch (err) {
